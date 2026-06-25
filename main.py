@@ -20,7 +20,7 @@ APP_NAME = "SlideNarrate Pro Full Web Cloud Backend"
 WORK_DIR = Path(os.environ.get("SLIDENARRATE_WORK_DIR", tempfile.gettempdir())) / "slidenarrate_full_web"
 WORK_DIR.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title=APP_NAME, version="1.2.4")
+app = FastAPI(title=APP_NAME, version="1.2.5")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=os.environ.get("CORS_ORIGINS", os.environ.get("ALLOWED_ORIGINS", "*")).split(","),
@@ -57,9 +57,9 @@ def health():
     return {
         "ok": True,
         "app": APP_NAME,
-        "version": "1.2.4",
+        "version": "1.2.5",
         "voices": {"tagalog_female": BLESSICA, "tagalog_male": ANGELO, "english_female": ENGLISH_FEMALE, "english_male": ENGLISH_MALE},
-        "features": ["generate-script", "english-script", "tagalog-script", "mp3", "synced-package", "license", "usage", "tagalog-money-normalizer", "english-voice-fix", "synced-lang-bugfix", "clickable-pricing"],
+        "features": ["generate-script", "english-script", "tagalog-script", "mp3", "synced-package", "license", "usage", "tagalog-money-normalizer", "english-voice-fix", "synced-lang-bugfix", "clickable-pricing", "pricing-page"],
         "license_required": license_required(),
     }
 
