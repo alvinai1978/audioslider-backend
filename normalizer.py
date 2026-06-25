@@ -4,6 +4,7 @@ NARRATOR_NAMES = ("Blessica", "Angelo", "Narrator", "Commentator")
 
 
 def remove_narrator_labels(text: str) -> str:
+    """Remove narrator labels only, without removing useful labels like Phase 1: or Monthly Plan:."""
     cleaned = []
     for line in (text or "").splitlines():
         line = re.sub(r"^\s*(Blessica|Angelo|Narrator|Commentator)\s*:\s*", "", line, flags=re.I).strip()
@@ -13,26 +14,30 @@ def remove_narrator_labels(text: str) -> str:
 
 
 def normalize_for_speech(input_text: str) -> str:
-    """Normalize symbols, currency, ranges, and common English plan words for Tagalog TTS."""
+    """Normalize symbols, peso amounts, ranges, percentages, and common plan words for Tagalog TTS."""
     text = remove_narrator_labels(input_text or "")
 
     # Specific commercial pricing pattern requested by user.
     text = re.sub(r"Trial\s*/\s*Demo\s*:\s*free\s*,\s*limited", "Trial o Demo: libre, pero limitado ang paggamit.", text, flags=re.I)
-    text = re.sub(r"\b1\s*month\s*:\s*₱([\d,]+)\s*[–—-]\s*₱([\d,]+)", lambda m: f"Isang buwan: mula {number_to_tagalog(_num(m.group(1)))} pesos hanggang {number_to_tagalog(_num(m.group(2)))} pesos.", text, flags=re.I)
-    text = re.sub(r"\b1\s*year\s*:\s*₱([\d,]+)\s*[–—-]\s*₱([\d,]+)", lambda m: f"Isang taon: mula {number_to_tagalog(_num(m.group(1)))} pesos hanggang {number_to_tagalog(_num(m.group(2)))} pesos.", text, flags=re.I)
-    text = re.sub(r"\bLifetime\s*:\s*₱([\d,]+)\s*[–—-]\s*₱([\d,]+)", lambda m: f"Lifetime access: mula {number_to_tagalog(_num(m.group(1)))} pesos hanggang {number_to_tagalog(_num(m.group(2)))} pesos.", text, flags=re.I)
+    text = re.sub(r"\b1\s*month\s*:\s*₱([\d,]+(?:\.\d{2})?)\s*[–—-]\s*₱([\d,]+(?:\.\d{2})?)", lambda m: f"Isang buwan: mula {money_to_tagalog_pesos(m.group(1), noun='pesos')} hanggang {money_to_tagalog_pesos(m.group(2), noun='pesos')}.", text, flags=re.I)
+    text = re.sub(r"\b1\s*year\s*:\s*₱([\d,]+(?:\.\d{2})?)\s*[–—-]\s*₱([\d,]+(?:\.\d{2})?)", lambda m: f"Isang taon: mula {money_to_tagalog_pesos(m.group(1), noun='pesos')} hanggang {money_to_tagalog_pesos(m.group(2), noun='pesos')}.", text, flags=re.I)
+    text = re.sub(r"\bLifetime\s*:\s*₱([\d,]+(?:\.\d{2})?)\s*[–—-]\s*₱([\d,]+(?:\.\d{2})?)", lambda m: f"Lifetime access: mula {money_to_tagalog_pesos(m.group(1), noun='pesos')} hanggang {money_to_tagalog_pesos(m.group(2), noun='pesos')}.", text, flags=re.I)
+
+    # Peso amounts written as: 10,000,000.00 Pesos, 1,000,000 Pesos, PHP 2,999, etc.
+    text = re.sub(r"\bPHP\s*([\d,]+(?:\.\d{2})?)\b", lambda m: money_to_tagalog_pesos(m.group(1)), text, flags=re.I)
+    text = re.sub(r"\b([\d,]+(?:\.\d{2})?)\s*(?:pesos?|piso)\b", lambda m: money_to_tagalog_pesos(m.group(1)), text, flags=re.I)
 
     # Currency ranges before single currency.
-    text = re.sub(r"₱([\d,]+)\s*[–—-]\s*₱([\d,]+)", lambda m: f"mula {number_to_tagalog(_num(m.group(1)))} pesos hanggang {number_to_tagalog(_num(m.group(2)))} pesos", text)
-    text = re.sub(r"\$([\d,]+)\s*[–—-]\s*\$([\d,]+)", lambda m: f"mula {number_to_tagalog(_num(m.group(1)))} dollars hanggang {number_to_tagalog(_num(m.group(2)))} dollars", text)
+    text = re.sub(r"₱([\d,]+(?:\.\d{2})?)\s*[–—-]\s*₱([\d,]+(?:\.\d{2})?)", lambda m: f"mula {money_to_tagalog_pesos(m.group(1), noun='pesos')} hanggang {money_to_tagalog_pesos(m.group(2), noun='pesos')}", text)
+    text = re.sub(r"\$([\d,]+(?:\.\d{2})?)\s*[–—-]\s*\$([\d,]+(?:\.\d{2})?)", lambda m: f"mula {money_to_tagalog_dollars(m.group(1))} hanggang {money_to_tagalog_dollars(m.group(2))}", text)
 
     # Percentages and numeric ranges.
     text = re.sub(r"(\d+(?:\.\d+)?)\s*%", lambda m: f"{decimal_to_tagalog(m.group(1))} porsiyento", text)
     text = re.sub(r"\b(\d+)\s*[–—-]\s*(\d+)\b", lambda m: f"{number_to_tagalog(int(m.group(1)))} hanggang {number_to_tagalog(int(m.group(2)))}", text)
 
-    # Single currency.
-    text = re.sub(r"₱([\d,]+)", lambda m: f"{number_to_tagalog(_num(m.group(1)))} pesos", text)
-    text = re.sub(r"\$([\d,]+)", lambda m: f"{number_to_tagalog(_num(m.group(1)))} dollars", text)
+    # Single currency symbols.
+    text = re.sub(r"₱([\d,]+(?:\.\d{2})?)", lambda m: money_to_tagalog_pesos(m.group(1), noun='pesos'), text)
+    text = re.sub(r"\$([\d,]+(?:\.\d{2})?)", lambda m: money_to_tagalog_dollars(m.group(1)), text)
 
     # Time/plans.
     text = re.sub(r"\b1\s*month\b", "isang buwan", text, flags=re.I)
@@ -57,7 +62,67 @@ def normalize_for_speech(input_text: str) -> str:
 
 
 def _num(value: str) -> int:
-    return int(value.replace(",", ""))
+    return int(str(value).replace(",", "").split(".", 1)[0])
+
+
+def _parse_money(value: str) -> tuple[int, int]:
+    raw = str(value).replace(",", "")
+    if "." in raw:
+        whole, cents = raw.split(".", 1)
+        cents = (cents + "00")[:2]
+        return int(whole or 0), int(cents or 0)
+    return int(raw or 0), 0
+
+
+def money_to_tagalog_pesos(value: str, noun: str = "piso") -> str:
+    pesos, cents = _parse_money(value)
+    if cents:
+        return f"{amount_number_to_tagalog(pesos, noun=noun)} {noun} at {number_to_tagalog(cents)} sentimos"
+    return f"{amount_number_to_tagalog(pesos, noun=noun)} {noun}"
+
+
+def money_to_tagalog_dollars(value: str) -> str:
+    dollars, cents = _parse_money(value)
+    if cents:
+        return f"{number_to_tagalog(dollars)} dollars at {number_to_tagalog(cents)} cents"
+    return f"{number_to_tagalog(dollars)} dollars"
+
+
+def amount_number_to_tagalog(n: int, noun: str = "piso") -> str:
+    """Natural amount form before piso/pesos: e.g., 10,000,000 -> sampung milyong."""
+    if n == 1_000_000:
+        return "isang milyong"
+    if n > 0 and n % 1_000_000 == 0:
+        return f"{linker_number_to_tagalog(n // 1_000_000)} milyong"
+    if n == 1000 and noun == "piso":
+        return "isang libong"
+    return number_to_tagalog(n)
+
+
+def linker_number_to_tagalog(n: int) -> str:
+    """Number phrase with Filipino linker before a following noun when helpful."""
+    base = number_to_tagalog(n)
+    irregular = {
+        "isa": "isang",
+        "dalawa": "dalawang",
+        "tatlo": "tatlong",
+        "apat": "apat na",
+        "lima": "limang",
+        "anim": "anim na",
+        "pito": "pitong",
+        "walo": "walong",
+        "siyam": "siyam na",
+        "sampu": "sampung",
+        "dalawampu": "dalawampung",
+        "tatlumpu": "tatlumpung",
+        "apatnapu": "apatnapung",
+        "limampu": "limampung",
+        "animnapu": "animnapung",
+        "pitumpu": "pitumpung",
+        "walumpu": "walumpung",
+        "siyamnapu": "siyamnapung",
+    }
+    return irregular.get(base, base)
 
 
 def decimal_to_tagalog(value: str) -> str:
@@ -112,5 +177,5 @@ def number_to_tagalog(n: int) -> str:
         return f"{th_text} {under1000(r)}" if r else th_text
     m = n // 1_000_000
     r = n % 1_000_000
-    m_text = "isang milyon" if m == 1 else f"{under1000(m)} milyon"
+    m_text = "isang milyon" if m == 1 else f"{number_to_tagalog(m)} milyon"
     return f"{m_text} {number_to_tagalog(r)}" if r else m_text

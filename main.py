@@ -14,13 +14,13 @@ from license_manager import assert_and_increment, parse_license, get_usage, lice
 from normalizer import normalize_for_speech, remove_narrator_labels
 from pptx_reader import extract_slides_from_pptx, generate_commentary, split_script_by_slide
 from sync_pptx import build_cloud_synced_pptx, create_timing_manifest_csv
-from tts_engine import BLESSICA, ANGELO, synthesize_to_mp3
+from tts_engine import BLESSICA, ANGELO, ENGLISH_FEMALE, ENGLISH_MALE, synthesize_to_mp3
 
 APP_NAME = "SlideNarrate Pro Full Web Cloud Backend"
 WORK_DIR = Path(os.environ.get("SLIDENARRATE_WORK_DIR", tempfile.gettempdir())) / "slidenarrate_full_web"
 WORK_DIR.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title=APP_NAME, version="1.2.2")
+app = FastAPI(title=APP_NAME, version="1.2.3")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=os.environ.get("CORS_ORIGINS", os.environ.get("ALLOWED_ORIGINS", "*")).split(","),
@@ -57,9 +57,9 @@ def health():
     return {
         "ok": True,
         "app": APP_NAME,
-        "version": "1.2.2",
-        "voices": {"female": BLESSICA, "male": ANGELO},
-        "features": ["generate-script", "english-script", "tagalog-script", "mp3", "synced-package", "license", "usage"],
+        "version": "1.2.3",
+        "voices": {"tagalog_female": BLESSICA, "tagalog_male": ANGELO, "english_female": ENGLISH_FEMALE, "english_male": ENGLISH_MALE},
+        "features": ["generate-script", "english-script", "tagalog-script", "mp3", "synced-package", "license", "usage", "tagalog-money-normalizer", "english-voice-fix"],
         "license_required": license_required(),
     }
 
@@ -185,7 +185,7 @@ async def synced_package(
 
 
 def _package_readme(slide_count: int) -> str:
-    return f"""SlideNarrate Pro Synced Package v1.2.2
+    return f"""SlideNarrate Pro Synced Package v1.2.3
 
 Files included:
 - slidenarrate_cloud_synced_repaired.pptx
@@ -205,12 +205,15 @@ If PowerPoint still says it cannot read the repaired PPTX:
 2. Use the included audio/slide_001.mp3, slide_002.mp3, etc.
 3. For guaranteed F5 automation, import this package into the Desktop EXE version because desktop PowerPoint automation is more reliable than cloud Open XML media timing.
 
-What changed in v1.2.2:
+What changed in v1.2.3:
 - Fixed an invalid PNG placeholder icon that could corrupt the exported PPTX.
 - Fixed PowerPoint XML ordering for transition/timing tags.
 - Removed an empty hyperlink relationship from the audio icon.
 - Added the original presentation as a safe fallback.
 - Added English/Tagalog output language support and buyer license enforcement.
+- Added professional pricing/payment website sections.
+- Added Tagalog peso amount pronunciation such as 10,000,000.00 Pesos = sampung milyong piso.
+- Fixed English audio mode so phrases like Under 1 are read with English voices, not Tagalog number reading.
 
 Notes:
 - Cloud synced PPTX generation is still best-effort because PowerPoint autoplay media XML varies across Office versions.

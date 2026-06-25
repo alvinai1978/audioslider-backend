@@ -10,9 +10,14 @@ from normalizer import normalize_for_speech, remove_narrator_labels
 
 BLESSICA = "fil-PH-BlessicaNeural"
 ANGELO = "fil-PH-AngeloNeural"
+ENGLISH_FEMALE = "en-US-JennyNeural"
+ENGLISH_MALE = "en-US-GuyNeural"
 
 
-def voice_for(narrator: str) -> str:
+def voice_for(narrator: str, language: str = "tagalog") -> str:
+    lang = (language or "tagalog").lower()
+    if lang.startswith("en"):
+        return ENGLISH_MALE if (narrator or "female").lower() == "male" else ENGLISH_FEMALE
     return ANGELO if (narrator or "female").lower() == "male" else BLESSICA
 
 
@@ -30,7 +35,7 @@ async def synthesize_to_mp3(script: str, narrator: str, out_path: Path, normaliz
     if not text.strip():
         raise ValueError("Script is empty after cleanup.")
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    voice = voice_for(narrator)
+    voice = voice_for(narrator, language=lang)
     lang = (language or "tagalog").lower()
 
     errors = []
