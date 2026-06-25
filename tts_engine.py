@@ -35,8 +35,8 @@ async def synthesize_to_mp3(script: str, narrator: str, out_path: Path, normaliz
     if not text.strip():
         raise ValueError("Script is empty after cleanup.")
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    voice = voice_for(narrator, language=lang)
     lang = (language or "tagalog").lower()
+    voice = voice_for(narrator, language=lang)
 
     errors = []
     for attempt in range(1, 3):

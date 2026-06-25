@@ -20,7 +20,7 @@ APP_NAME = "SlideNarrate Pro Full Web Cloud Backend"
 WORK_DIR = Path(os.environ.get("SLIDENARRATE_WORK_DIR", tempfile.gettempdir())) / "slidenarrate_full_web"
 WORK_DIR.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title=APP_NAME, version="1.2.3")
+app = FastAPI(title=APP_NAME, version="1.2.4")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=os.environ.get("CORS_ORIGINS", os.environ.get("ALLOWED_ORIGINS", "*")).split(","),
@@ -57,9 +57,9 @@ def health():
     return {
         "ok": True,
         "app": APP_NAME,
-        "version": "1.2.3",
+        "version": "1.2.4",
         "voices": {"tagalog_female": BLESSICA, "tagalog_male": ANGELO, "english_female": ENGLISH_FEMALE, "english_male": ENGLISH_MALE},
-        "features": ["generate-script", "english-script", "tagalog-script", "mp3", "synced-package", "license", "usage", "tagalog-money-normalizer", "english-voice-fix"],
+        "features": ["generate-script", "english-script", "tagalog-script", "mp3", "synced-package", "license", "usage", "tagalog-money-normalizer", "english-voice-fix", "synced-lang-bugfix", "clickable-pricing"],
         "license_required": license_required(),
     }
 
@@ -185,7 +185,7 @@ async def synced_package(
 
 
 def _package_readme(slide_count: int) -> str:
-    return f"""SlideNarrate Pro Synced Package v1.2.3
+    return f"""SlideNarrate Pro Synced Package v1.2.4
 
 Files included:
 - slidenarrate_cloud_synced_repaired.pptx
@@ -205,7 +205,10 @@ If PowerPoint still says it cannot read the repaired PPTX:
 2. Use the included audio/slide_001.mp3, slide_002.mp3, etc.
 3. For guaranteed F5 automation, import this package into the Desktop EXE version because desktop PowerPoint automation is more reliable than cloud Open XML media timing.
 
-What changed in v1.2.3:
+What changed in v1.2.4:
+- Fixed synced package error: cannot access local variable lang.
+- Added clickable pricing cards/buttons that jump to Payment & Activation.
+- Added Choose Your Plan and Payment & Activation navigation labels.
 - Fixed an invalid PNG placeholder icon that could corrupt the exported PPTX.
 - Fixed PowerPoint XML ordering for transition/timing tags.
 - Removed an empty hyperlink relationship from the audio icon.
