@@ -11,6 +11,7 @@ from typing import Any
 DEFAULT_SECRET = "CHANGE_THIS_SECRET_BEFORE_SELLING"
 DATA_DIR = Path(os.environ.get("SLIDENARRATE_DATA_DIR", "./data"))
 DB_PATH = DATA_DIR / "usage.db"
+SUPPORTED_KINDS = {"script", "mp3", "sync"}
 
 
 def _secret() -> bytes:
@@ -26,12 +27,20 @@ def b64url_decode(value: str) -> bytes:
     return base64.urlsafe_b64decode(value.encode("ascii"))
 
 
-def create_license(customer: str, plan: str, days: int, mp3_limit: int = 500, sync_limit: int = 100) -> str:
+def create_license(
+    customer: str,
+    plan: str,
+    days: int,
+    script_limit: int = 500,
+    mp3_limit: int = 500,
+    sync_limit: int = 100,
+) -> str:
     exp = datetime.now(timezone.utc) + timedelta(days=int(days))
     payload = {
         "customer": customer,
         "plan": plan,
         "expires": exp.strftime("%Y-%m-%d"),
+        "script_limit": int(script_limit),
         "mp3_limit": int(mp3_limit),
         "sync_limit": int(sync_limit),
         "iat": datetime.now(timezone.utc).isoformat(),
@@ -52,21 +61,27 @@ def parse_license(key: str) -> dict[str, Any]:
     exp = datetime.strptime(payload["expires"], "%Y-%m-%d").replace(tzinfo=timezone.utc)
     if datetime.now(timezone.utc) > exp + timedelta(days=1):
         raise ValueError("License expired.")
+    # Backward compatibility with older generated keys.
+    payload.setdefault("script_limit", payload.get("mp3_limit", 500))
+    payload.setdefault("mp3_limit", 500)
+    payload.setdefault("sync_limit", 100)
     return payload
 
 
 def init_db() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(DB_PATH) as con:
-        con.execute("""
-        CREATE TABLE IF NOT EXISTS usage (
-            license_hash TEXT NOT NULL,
-            period TEXT NOT NULL,
-            kind TEXT NOT NULL,
-            count INTEGER NOT NULL DEFAULT 0,
-            PRIMARY KEY (license_hash, period, kind)
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS usage (
+                license_hash TEXT NOT NULL,
+                period TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                count INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (license_hash, period, kind)
+            )
+            """
         )
-        """)
         con.commit()
 
 
@@ -84,26 +99,41 @@ def get_usage(key: str) -> dict[str, int]:
     period = current_period()
     with sqlite3.connect(DB_PATH) as con:
         rows = con.execute("SELECT kind, count FROM usage WHERE license_hash=? AND period=?", (h, period)).fetchall()
-    return {kind: count for kind, count in rows}
+    out = {kind: count for kind, count in rows}
+    for kind in SUPPORTED_KINDS:
+        out.setdefault(kind, 0)
+    return out
+
+
+def license_required() -> bool:
+    return os.environ.get("REQUIRE_LICENSE", "true").lower() in ("1", "true", "yes")
 
 
 def assert_and_increment(key: str | None, kind: str) -> dict[str, Any]:
-    require = os.environ.get("REQUIRE_LICENSE", "false").lower() in ("1", "true", "yes")
+    if kind not in SUPPORTED_KINDS:
+        raise ValueError(f"Unsupported usage type: {kind}")
+    require = license_required()
     if not require and not key:
         return {"ok": True, "license_required": False, "usage": {}}
 
     payload = parse_license(key or "")
-    limit_name = "mp3_limit" if kind == "mp3" else "sync_limit"
+    limit_name = f"{kind}_limit"
     limit = int(payload.get(limit_name, 0) or 0)
     init_db()
     h = license_hash(key or "")
     period = current_period()
     with sqlite3.connect(DB_PATH) as con:
-        row = con.execute("SELECT count FROM usage WHERE license_hash=? AND period=? AND kind=?", (h, period, kind)).fetchone()
+        row = con.execute(
+            "SELECT count FROM usage WHERE license_hash=? AND period=? AND kind=?",
+            (h, period, kind),
+        ).fetchone()
         count = int(row[0]) if row else 0
         if limit and count >= limit:
             raise ValueError(f"Monthly {kind} usage limit reached.")
         count += 1
-        con.execute("INSERT OR REPLACE INTO usage (license_hash, period, kind, count) VALUES (?, ?, ?, ?)", (h, period, kind, count))
+        con.execute(
+            "INSERT OR REPLACE INTO usage (license_hash, period, kind, count) VALUES (?, ?, ?, ?)",
+            (h, period, kind, count),
+        )
         con.commit()
     return {"ok": True, "payload": payload, "usage": {kind: count}, "limit": limit}

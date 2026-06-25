@@ -37,7 +37,6 @@ def _extract_text_nodes(xml_bytes: bytes) -> list[str]:
         return []
     texts = []
     for elem in root.iter():
-        # a:t text runs
         if elem.tag.endswith("}t") and elem.text:
             texts.append(elem.text)
     return texts
@@ -50,7 +49,6 @@ def _clean_lines(lines: list[str]) -> list[str]:
         line = re.sub(r"\s+", " ", raw or "").strip()
         if not line:
             continue
-        # Remove repeated text fragments but keep repeated numbers if separated.
         if line == last:
             continue
         out.append(line)
@@ -65,53 +63,69 @@ def _choose_title(lines: list[str], idx: int) -> str:
     return f"Slide {idx}"
 
 
-def generate_tagalog_commentary(slides: list[dict], narrator: str = "Blessica", style: str = "professional") -> str:
-    if narrator.lower() == "male":
-        narrator_name = "Angelo"
-    elif narrator.lower() == "female":
-        narrator_name = "Blessica"
-    else:
-        narrator_name = narrator or "Blessica"
+def generate_commentary(slides: list[dict], narrator: str = "female", style: str = "professional", output_language: str = "tagalog") -> str:
+    if (output_language or "tagalog").lower().startswith("en"):
+        return generate_english_commentary(slides, narrator=narrator, style=style)
+    return generate_tagalog_commentary(slides, narrator=narrator, style=style)
 
+
+def _narrator_name(narrator: str) -> str:
+    if (narrator or "female").lower() == "male":
+        return "Angelo"
+    return "Blessica"
+
+
+def generate_tagalog_commentary(slides: list[dict], narrator: str = "female", style: str = "professional") -> str:
+    narrator_name = _narrator_name(narrator)
     blocks = [
         f"{narrator_name}: Magandang araw. Narito ang malinaw na Tagalog commentary para sa presentasyong ito. Babasahin natin ang bawat slide at bibigyan ng maayos na paliwanag ang lahat ng mahahalagang detalye."
     ]
-
     for slide in slides:
         num = slide.get("num")
         lines = slide.get("lines") or []
         title = slide.get("title") or f"Slide {num}"
         details = [x for x in lines if x.strip() and x.strip() != title]
-
         block = [f"SLIDE {num} – {title}", f"{narrator_name}: Sa slide {num}, ang pangunahing paksa ay {title}."]
-        block.extend(_details_to_commentary(details))
+        block.extend(_details_to_tagalog_commentary(details))
         blocks.append("\n".join(block))
-
     blocks.append(f"{narrator_name}: Iyan ang kabuuang paliwanag ng presentation. Maaari pang i-edit ang script para mas tumugma sa eksaktong tono, audience, at timing ng presentasyon. Maraming salamat.")
     return "\n\n".join(blocks).replace("\n\n\n", "\n\n")
 
 
-def _details_to_commentary(details: list[str]) -> list[str]:
+def generate_english_commentary(slides: list[dict], narrator: str = "female", style: str = "professional") -> str:
+    narrator_name = _narrator_name(narrator)
+    blocks = [
+        f"{narrator_name}: Welcome. Here is a clear English commentary for this presentation. We will go through each slide and explain all important details in a professional narration style."
+    ]
+    for slide in slides:
+        num = slide.get("num")
+        lines = slide.get("lines") or []
+        title = slide.get("title") or f"Slide {num}"
+        details = [x for x in lines if x.strip() and x.strip() != title]
+        block = [f"SLIDE {num} – {title}", f"{narrator_name}: On slide {num}, the main topic is {title}."]
+        block.extend(_details_to_english_commentary(details))
+        blocks.append("\n".join(block))
+    blocks.append(f"{narrator_name}: That completes the presentation commentary. You may still edit this script to better match your timing, audience, and exact delivery style. Thank you.")
+    return "\n\n".join(blocks).replace("\n\n\n", "\n\n")
+
+
+def _details_to_tagalog_commentary(details: list[str]) -> list[str]:
     if not details:
         return ["Walang karagdagang readable text sa slide na ito. Kung may details na nasa larawan, kailangan itong i-type o gamitan ng OCR sa susunod na version."]
-
     commentary = []
     pending_header = None
-    for i, raw in enumerate(details):
+    for raw in details:
         item = re.sub(r"^[•\-–—✓!xX]+\s*", "", raw).strip()
         if not item:
             continue
         lower = item.lower()
-
         if _looks_like_footer(item):
             commentary.append(f"Mahalagang paalala rin dito: {item}.")
             continue
-
         if _looks_like_short_header(item):
             pending_header = item
             commentary.append(f"May bahagi rin dito tungkol sa {item}.")
             continue
-
         if re.search(r"phase\s*\d+", item, flags=re.I):
             commentary.append(f"Makikita rin ang {item}, na bahagi ng step-by-step na execution plan.")
         elif re.search(r"months?\s*\d+", lower):
@@ -122,7 +136,36 @@ def _details_to_commentary(details: list[str]) -> list[str]:
             commentary.append(f"Sa ilalim ng {pending_header}, kasama ang {item}.")
         else:
             commentary.append(f"Kasama rin sa detalye ang {item}.")
+    return commentary
 
+
+def _details_to_english_commentary(details: list[str]) -> list[str]:
+    if not details:
+        return ["There is no additional readable text on this slide. If some details are inside an image, they may need to be typed manually or processed with OCR later."]
+    commentary = []
+    pending_header = None
+    for raw in details:
+        item = re.sub(r"^[•\-–—✓!xX]+\s*", "", raw).strip()
+        if not item:
+            continue
+        lower = item.lower()
+        if _looks_like_footer(item):
+            commentary.append(f"An important note here is: {item}.")
+            continue
+        if _looks_like_short_header(item):
+            pending_header = item
+            commentary.append(f"This slide also includes a section on {item}.")
+            continue
+        if re.search(r"phase\s*\d+", item, flags=re.I):
+            commentary.append(f"It also shows {item}, which is part of the step-by-step execution plan.")
+        elif re.search(r"months?\s*\d+", lower):
+            commentary.append(f"The timeline mentioned here is {item}.")
+        elif re.search(r"₱|\$|\d+(?:\.\d+)?\s*%|\d{1,3},\d{3}", item):
+            commentary.append(f"A key number or amount on this slide is {item}.")
+        elif pending_header:
+            commentary.append(f"Under {pending_header}, the slide includes {item}.")
+        else:
+            commentary.append(f"Another detail included here is {item}.")
     return commentary
 
 
@@ -146,9 +189,7 @@ def split_script_by_slide(script: str, slide_count: int) -> dict[int, str]:
             n = int(m.group(1))
             start = m.start()
             end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
-            block = text[start:end].strip()
-            # Remove the SLIDE title line itself from audio or keep? Keep for context.
-            mapping[n] = block
+            mapping[n] = text[start:end].strip()
     else:
         words = text.split()
         chunk = max(1, len(words) // max(slide_count, 1))

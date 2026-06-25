@@ -10,9 +10,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
-from license_manager import assert_and_increment, parse_license, get_usage
+from license_manager import assert_and_increment, parse_license, get_usage, license_required
 from normalizer import normalize_for_speech, remove_narrator_labels
-from pptx_reader import extract_slides_from_pptx, generate_tagalog_commentary, split_script_by_slide
+from pptx_reader import extract_slides_from_pptx, generate_commentary, split_script_by_slide
 from sync_pptx import build_cloud_synced_pptx, create_timing_manifest_csv
 from tts_engine import BLESSICA, ANGELO, synthesize_to_mp3
 
@@ -20,10 +20,10 @@ APP_NAME = "SlideNarrate Pro Full Web Cloud Backend"
 WORK_DIR = Path(os.environ.get("SLIDENARRATE_WORK_DIR", tempfile.gettempdir())) / "slidenarrate_full_web"
 WORK_DIR.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title=APP_NAME, version="1.2.1")
+app = FastAPI(title=APP_NAME, version="1.2.2")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
+    allow_origins=os.environ.get("CORS_ORIGINS", os.environ.get("ALLOWED_ORIGINS", "*")).split(","),
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -35,10 +35,12 @@ class TTSRequest(BaseModel):
     script: str = Field(min_length=1, max_length=120_000)
     narrator: Literal["female", "male"] = "female"
     normalize: bool = True
+    language: Literal["tagalog", "english"] = "tagalog"
 
 
 class NormalizeRequest(BaseModel):
     script: str = Field(min_length=1, max_length=120_000)
+    language: Literal["tagalog", "english"] = "tagalog"
 
 
 class LicenseCheckRequest(BaseModel):
@@ -55,10 +57,10 @@ def health():
     return {
         "ok": True,
         "app": APP_NAME,
-        "version": "1.2.1",
+        "version": "1.2.2",
         "voices": {"female": BLESSICA, "male": ANGELO},
-        "features": ["generate-script", "mp3", "synced-package", "license", "usage"],
-        "license_required": os.environ.get("REQUIRE_LICENSE", "false").lower() in ("1", "true", "yes"),
+        "features": ["generate-script", "english-script", "tagalog-script", "mp3", "synced-package", "license", "usage"],
+        "license_required": license_required(),
     }
 
 
@@ -74,7 +76,7 @@ def check_license(req: LicenseCheckRequest):
 
 @app.post("/api/normalize")
 def normalize(req: NormalizeRequest):
-    return {"ok": True, "text": normalize_for_speech(req.script)}
+    return {"ok": True, "text": normalize_for_speech(req.script) if req.language == "tagalog" else remove_narrator_labels(req.script)}
 
 
 @app.post("/api/generate-script")
@@ -82,15 +84,19 @@ async def generate_script(
     file: UploadFile = File(...),
     narrator: Literal["female", "male"] = Form("female"),
     style: str = Form("professional"),
+    output_language: Literal["tagalog", "english"] = Form("tagalog"),
     x_slidenarrate_license: str | None = Header(default=None),
 ):
-    # script generation is intentionally free by default; set REQUIRE_LICENSE=true if you want to lock it too.
+    try:
+        assert_and_increment(x_slidenarrate_license, "script")
+    except Exception as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
     _validate_extension(file.filename, ".pptx")
     saved = await _save_upload(file, suffix=".pptx")
     try:
         slides = extract_slides_from_pptx(saved)
-        script = generate_tagalog_commentary(slides, narrator=narrator, style=style)
-        return {"ok": True, "slide_count": len(slides), "slides": slides, "script": script}
+        script = generate_commentary(slides, narrator=narrator, style=style, output_language=output_language)
+        return {"ok": True, "slide_count": len(slides), "slides": slides, "script": script, "output_language": output_language}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Script generation failed: {exc}")
     finally:
@@ -106,7 +112,7 @@ async def tts(req: TTSRequest, x_slidenarrate_license: str | None = Header(defau
 
     out_path = WORK_DIR / f"narration_{uuid.uuid4().hex}.mp3"
     try:
-        meta = await synthesize_to_mp3(req.script, req.narrator, out_path, normalize=req.normalize)
+        meta = await synthesize_to_mp3(req.script, req.narrator, out_path, normalize=req.normalize, language=req.language)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"TTS failed: {exc}")
 
@@ -124,6 +130,7 @@ async def synced_package(
     file: UploadFile = File(...),
     script: str = Form(...),
     narrator: Literal["female", "male"] = Form("female"),
+    language: Literal["tagalog", "english"] = Form("tagalog"),
     x_slidenarrate_license: str | None = Header(default=None),
 ):
     try:
@@ -149,7 +156,7 @@ async def synced_package(
         for n in range(1, slide_count + 1):
             text = blocks.get(n, "").strip() or f"Sa slide {n}, ipagpatuloy natin ang presentation."
             audio_path = job_dir / f"slide_{n:03d}.mp3"
-            meta = await synthesize_to_mp3(text, narrator, audio_path, normalize=True)
+            meta = await synthesize_to_mp3(text, narrator, audio_path, normalize=True, language=language)
             slide_audio_files[n] = audio_path
             durations[n] = float(meta.get("duration", 3.0))
             slide_audio_meta[n] = {**meta, "filename": f"audio/slide_{n:03d}.mp3"}
@@ -178,7 +185,7 @@ async def synced_package(
 
 
 def _package_readme(slide_count: int) -> str:
-    return f"""SlideNarrate Pro Synced Package v1.2.1
+    return f"""SlideNarrate Pro Synced Package v1.2.2
 
 Files included:
 - slidenarrate_cloud_synced_repaired.pptx
@@ -198,11 +205,12 @@ If PowerPoint still says it cannot read the repaired PPTX:
 2. Use the included audio/slide_001.mp3, slide_002.mp3, etc.
 3. For guaranteed F5 automation, import this package into the Desktop EXE version because desktop PowerPoint automation is more reliable than cloud Open XML media timing.
 
-What changed in v1.2.1:
+What changed in v1.2.2:
 - Fixed an invalid PNG placeholder icon that could corrupt the exported PPTX.
 - Fixed PowerPoint XML ordering for transition/timing tags.
 - Removed an empty hyperlink relationship from the audio icon.
 - Added the original presentation as a safe fallback.
+- Added English/Tagalog output language support and buyer license enforcement.
 
 Notes:
 - Cloud synced PPTX generation is still best-effort because PowerPoint autoplay media XML varies across Office versions.
