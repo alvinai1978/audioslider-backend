@@ -20,7 +20,7 @@ APP_NAME = "SlideNarrate Pro Full Web Cloud Backend"
 WORK_DIR = Path(os.environ.get("SLIDENARRATE_WORK_DIR", tempfile.gettempdir())) / "slidenarrate_full_web"
 WORK_DIR.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title=APP_NAME, version="1.2.0")
+app = FastAPI(title=APP_NAME, version="1.2.1")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
@@ -55,7 +55,7 @@ def health():
     return {
         "ok": True,
         "app": APP_NAME,
-        "version": "1.2.0",
+        "version": "1.2.1",
         "voices": {"female": BLESSICA, "male": ANGELO},
         "features": ["generate-script", "mp3", "synced-package", "license", "usage"],
         "license_required": os.environ.get("REQUIRE_LICENSE", "false").lower() in ("1", "true", "yes"),
@@ -158,12 +158,13 @@ async def synced_package(
         manifest_path = job_dir / "timing_manifest.csv"
         create_timing_manifest_csv(slide_audio_meta, manifest_path)
 
-        synced_pptx = job_dir / "slidenarrate_cloud_synced_experimental.pptx"
+        synced_pptx = job_dir / "slidenarrate_cloud_synced_repaired.pptx"
         build_cloud_synced_pptx(source_pptx, synced_pptx, slide_audio_files, durations)
 
         readme = _package_readme(slide_count)
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
-            z.write(synced_pptx, "slidenarrate_cloud_synced_experimental.pptx")
+            z.write(synced_pptx, "slidenarrate_cloud_synced_repaired.pptx")
+            z.write(source_pptx, "original_uploaded_presentation.pptx")
             z.write(manifest_path, "timing_manifest.csv")
             z.writestr("slide_scripts.txt", "\n".join(scripts_txt))
             z.writestr("README_OPEN_THIS.txt", readme)
@@ -177,24 +178,35 @@ async def synced_package(
 
 
 def _package_readme(slide_count: int) -> str:
-    return f"""SlideNarrate Pro Synced Package
+    return f"""SlideNarrate Pro Synced Package v1.2.1
 
 Files included:
-- slidenarrate_cloud_synced_experimental.pptx
+- slidenarrate_cloud_synced_repaired.pptx
+- original_uploaded_presentation.pptx
 - audio/slide_001.mp3 ... per-slide audio files
 - timing_manifest.csv
 - slide_scripts.txt
 
 How to test:
-1. Extract this ZIP.
-2. Open slidenarrate_cloud_synced_experimental.pptx in Microsoft PowerPoint Desktop.
-3. Press F5.
-4. If PowerPoint asks to enable media/content, allow it.
+1. Extract this ZIP first. Do not open the PPTX directly inside the ZIP preview.
+2. Open slidenarrate_cloud_synced_repaired.pptx in Microsoft PowerPoint Desktop.
+3. If PowerPoint asks to enable media/content, allow it.
+4. Press F5.
+
+If PowerPoint still says it cannot read the repaired PPTX:
+1. Use original_uploaded_presentation.pptx instead.
+2. Use the included audio/slide_001.mp3, slide_002.mp3, etc.
+3. For guaranteed F5 automation, import this package into the Desktop EXE version because desktop PowerPoint automation is more reliable than cloud Open XML media timing.
+
+What changed in v1.2.1:
+- Fixed an invalid PNG placeholder icon that could corrupt the exported PPTX.
+- Fixed PowerPoint XML ordering for transition/timing tags.
+- Removed an empty hyperlink relationship from the audio icon.
+- Added the original presentation as a safe fallback.
 
 Notes:
-- This cloud-safe PPTX sync uses direct PPTX/Open XML packaging so it can run on Linux cloud hosting.
-- It is tested as an export method, but PowerPoint media behavior may vary by Office version.
-- If autoplay does not work perfectly, use the included per-slide MP3 files with the Desktop EXE version for guaranteed PowerPoint automation.
+- Cloud synced PPTX generation is still best-effort because PowerPoint autoplay media XML varies across Office versions.
+- The per-slide MP3 files are the reliable output.
 
 Slides processed: {slide_count}
 """

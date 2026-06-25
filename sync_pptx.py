@@ -1,11 +1,9 @@
+import base64
 import csv
-import io
 import re
-import tempfile
 import zipfile
 from pathlib import Path
 import xml.etree.ElementTree as ET
-from typing import Dict, List
 
 # Namespaces
 P = "http://schemas.openxmlformats.org/presentationml/2006/main"
@@ -13,6 +11,7 @@ A = "http://schemas.openxmlformats.org/drawingml/2006/main"
 R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 P14 = "http://schemas.microsoft.com/office/powerpoint/2010/main"
 PKG_REL = "http://schemas.openxmlformats.org/package/2006/relationships"
+CT = "http://schemas.openxmlformats.org/package/2006/content-types"
 
 ET.register_namespace("p", P)
 ET.register_namespace("a", A)
@@ -25,35 +24,44 @@ def create_timing_manifest_csv(slide_audio: dict[int, dict], out_path: Path) -> 
         writer = csv.writer(f)
         writer.writerow(["slide", "audio_file", "duration_seconds", "engine", "voice"])
         for n, meta in sorted(slide_audio.items()):
-            writer.writerow([n, meta.get("filename"), round(float(meta.get("duration", 0)), 2), meta.get("engine"), meta.get("voice")])
+            writer.writerow([
+                n,
+                meta.get("filename"),
+                round(float(meta.get("duration", 0)), 2),
+                meta.get("engine"),
+                meta.get("voice"),
+            ])
 
 
 def build_cloud_synced_pptx(input_pptx: Path, output_pptx: Path, slide_audio_files: dict[int, Path], durations: dict[int, float]) -> None:
-    """Experimental direct-PPTX sync exporter.
+    """Best-effort direct-PPTX audio embedder for cloud hosting.
 
-    Adds each slide's MP3 into ppt/media, adds relationships, inserts a small audio
-    picture shape, and sets slide advance timing. This avoids PowerPoint desktop
-    automation, so it can run on Linux cloud hosts. PowerPoint XML media timelines
-    are complicated, so test in Microsoft PowerPoint Desktop after export.
+    This version fixes the common causes of unreadable PPTX files:
+    - uses a valid PNG placeholder icon
+    - keeps p:transition and p:timing in PowerPoint schema order
+    - avoids an empty hyperlink relationship on the media icon
+    - preserves the original presentation parts unchanged wherever possible
+
+    PowerPoint media autoplay XML can still vary across Office versions, so this
+    package also includes per-slide MP3 files and a manifest as a safe fallback.
     """
     output_pptx.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(input_pptx, "r") as zin:
         existing = {info.filename: zin.read(info.filename) for info in zin.infolist()}
 
-    # Add mp3 content type.
-    existing["[Content_Types].xml"] = _ensure_content_type_mp3(existing.get("[Content_Types].xml", b""))
+    existing["[Content_Types].xml"] = _ensure_media_content_types(existing.get("[Content_Types].xml", b""))
 
-    # Add a tiny PNG audio placeholder icon in media.
     icon_path = "ppt/media/slidenarrate_audio_icon.png"
-    if icon_path not in existing:
-        existing[icon_path] = _tiny_png()
+    existing[icon_path] = _audio_icon_png()
 
     for slide_num, audio_file in slide_audio_files.items():
         slide_path = f"ppt/slides/slide{slide_num}.xml"
         if slide_path not in existing:
             continue
+
         media_name = f"ppt/media/slidenarrate_slide_{slide_num:03d}.mp3"
         existing[media_name] = audio_file.read_bytes()
+
         slide_xml, rels_xml = _patch_slide_with_audio(
             existing[slide_path],
             existing.get(f"ppt/slides/_rels/slide{slide_num}.xml.rels"),
@@ -70,16 +78,20 @@ def build_cloud_synced_pptx(input_pptx: Path, output_pptx: Path, slide_audio_fil
             zout.writestr(name, data)
 
 
-def _ensure_content_type_mp3(xml_bytes: bytes) -> bytes:
+def _ensure_media_content_types(xml_bytes: bytes) -> bytes:
     if not xml_bytes:
-        return b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>'
-    root = ET.fromstring(xml_bytes)
-    ns = "{http://schemas.openxmlformats.org/package/2006/content-types}"
-    for child in root:
-        if child.tag == ns + "Default" and child.attrib.get("Extension") == "mp3":
-            return ET.tostring(root, encoding="utf-8", xml_declaration=True)
-    ET.SubElement(root, ns + "Default", {"Extension": "mp3", "ContentType": "audio/mpeg"})
-    ET.SubElement(root, ns + "Default", {"Extension": "png", "ContentType": "image/png"}) if not any(c.tag == ns + "Default" and c.attrib.get("Extension") == "png" for c in root) else None
+        root = ET.Element(f"{{{CT}}}Types")
+    else:
+        root = ET.fromstring(xml_bytes)
+    ns = f"{{{CT}}}"
+
+    def has_default(ext: str) -> bool:
+        return any(c.tag == ns + "Default" and c.attrib.get("Extension", "").lower() == ext for c in root)
+
+    if not has_default("mp3"):
+        ET.SubElement(root, ns + "Default", {"Extension": "mp3", "ContentType": "audio/mpeg"})
+    if not has_default("png"):
+        ET.SubElement(root, ns + "Default", {"Extension": "png", "ContentType": "image/png"})
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
 
@@ -87,37 +99,32 @@ def _patch_slide_with_audio(slide_xml_bytes: bytes, rels_xml_bytes: bytes | None
     slide_root = ET.fromstring(slide_xml_bytes)
     rels_root = _load_rels(rels_xml_bytes)
 
-    audio_rid = _next_rid(rels_root)
-    ET.SubElement(rels_root, f"{{{PKG_REL}}}Relationship", {
-        "Id": audio_rid,
-        "Type": "http://schemas.openxmlformats.org/officeDocument/2006/relationships/audio",
-        "Target": audio_target,
-    })
-    media_rid = _next_rid(rels_root)
-    ET.SubElement(rels_root, f"{{{PKG_REL}}}Relationship", {
-        "Id": media_rid,
-        "Type": "http://schemas.microsoft.com/office/2007/relationships/media",
-        "Target": audio_target,
-    })
-    icon_rid = _next_rid(rels_root)
-    ET.SubElement(rels_root, f"{{{PKG_REL}}}Relationship", {
-        "Id": icon_rid,
-        "Type": "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image",
-        "Target": icon_target,
-    })
+    audio_rid = _add_relationship(rels_root, "http://schemas.openxmlformats.org/officeDocument/2006/relationships/audio", audio_target)
+    media_rid = _add_relationship(rels_root, "http://schemas.microsoft.com/office/2007/relationships/media", audio_target)
+    icon_rid = _add_relationship(rels_root, "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image", icon_target)
 
     shape_id = _next_shape_id(slide_root)
     _append_audio_pic(slide_root, shape_id, audio_rid, media_rid, icon_rid)
     _set_transition_advance(slide_root, adv_ms)
     _set_timing_auto_audio(slide_root, shape_id)
+    _order_slide_children(slide_root)
 
-    return ET.tostring(slide_root, encoding="utf-8", xml_declaration=True), ET.tostring(rels_root, encoding="utf-8", xml_declaration=True)
+    return (
+        ET.tostring(slide_root, encoding="utf-8", xml_declaration=True),
+        ET.tostring(rels_root, encoding="utf-8", xml_declaration=True),
+    )
 
 
 def _load_rels(xml_bytes: bytes | None):
     if xml_bytes:
         return ET.fromstring(xml_bytes)
     return ET.Element(f"{{{PKG_REL}}}Relationships")
+
+
+def _add_relationship(root, rel_type: str, target: str) -> str:
+    rid = _next_rid(root)
+    ET.SubElement(root, f"{{{PKG_REL}}}Relationship", {"Id": rid, "Type": rel_type, "Target": target})
+    return rid
 
 
 def _next_rid(root) -> str:
@@ -148,9 +155,7 @@ def _append_audio_pic(slide_root, shape_id: int, audio_rid: str, media_rid: str,
     pic = ET.fromstring(f'''
     <p:pic xmlns:p="{P}" xmlns:a="{A}" xmlns:r="{R}" xmlns:p14="{P14}">
       <p:nvPicPr>
-        <p:cNvPr id="{shape_id}" name="SlideNarrate audio {shape_id}">
-          <a:hlinkClick r:id="" action="ppaction://media"/>
-        </p:cNvPr>
+        <p:cNvPr id="{shape_id}" name="SlideNarrate audio {shape_id}"/>
         <p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr>
         <p:nvPr>
           <a:audioFile r:link="{audio_rid}"/>
@@ -175,19 +180,16 @@ def _append_audio_pic(slide_root, shape_id: int, audio_rid: str, media_rid: str,
 
 
 def _set_transition_advance(slide_root, adv_ms: int) -> None:
-    # Remove existing transition? Keep type but ensure auto advance timing.
-    transition = slide_root.find(f"{{{P}}}transition")
-    if transition is None:
-        # p:transition should appear before p:timing if possible.
-        transition = ET.Element(f"{{{P}}}transition")
-        # append near end is accepted by many PowerPoint versions.
-        slide_root.append(transition)
+    for child in list(slide_root):
+        if child.tag == f"{{{P}}}transition":
+            slide_root.remove(child)
+    transition = ET.Element(f"{{{P}}}transition")
     transition.set("advClick", "0")
     transition.set("advTm", str(max(1000, adv_ms)))
+    slide_root.append(transition)
 
 
 def _set_timing_auto_audio(slide_root, shape_id: int) -> None:
-    # Replace existing timing with a simple automatic audio timeline.
     for child in list(slide_root):
         if child.tag == f"{{{P}}}timing":
             slide_root.remove(child)
@@ -202,23 +204,16 @@ def _set_timing_auto_audio(slide_root, shape_id: int) -> None:
                   <p:childTnLst>
                     <p:par>
                       <p:cTn id="3" fill="hold">
-                        <p:stCondLst><p:cond delay="indefinite"/></p:stCondLst>
+                        <p:stCondLst><p:cond delay="0"/></p:stCondLst>
                         <p:childTnLst>
-                          <p:par>
-                            <p:cTn id="4" fill="hold">
-                              <p:stCondLst><p:cond delay="0"/></p:stCondLst>
-                              <p:childTnLst>
-                                <p:audio isNarration="1">
-                                  <p:cMediaNode vol="80000">
-                                    <p:cTn id="5" fill="hold" display="0">
-                                      <p:stCondLst><p:cond delay="0"/></p:stCondLst>
-                                    </p:cTn>
-                                    <p:tgtEl><p:spTgt spid="{shape_id}"/></p:tgtEl>
-                                  </p:cMediaNode>
-                                </p:audio>
-                              </p:childTnLst>
-                            </p:cTn>
-                          </p:par>
+                          <p:audio isNarration="1">
+                            <p:cMediaNode vol="80000">
+                              <p:cTn id="4" fill="hold" display="0">
+                                <p:stCondLst><p:cond delay="0"/></p:stCondLst>
+                              </p:cTn>
+                              <p:tgtEl><p:spTgt spid="{shape_id}"/></p:tgtEl>
+                            </p:cMediaNode>
+                          </p:audio>
                         </p:childTnLst>
                       </p:cTn>
                     </p:par>
@@ -236,9 +231,27 @@ def _set_timing_auto_audio(slide_root, shape_id: int) -> None:
     slide_root.append(timing)
 
 
-def _tiny_png() -> bytes:
-    # 1x1 transparent png. PowerPoint just needs an image placeholder relationship.
-    return bytes.fromhex(
-        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
-        "0000000a49444154789c6360000002000100ffff03000006000557bfab0000000049454e44ae426082"
+def _order_slide_children(slide_root) -> None:
+    """Keep child element order valid for p:sld.
+
+    PowerPoint is strict about p:sld child order. Invalid order can trigger:
+    "Sorry, PowerPoint can't read ...". The expected order is roughly:
+    cSld, clrMapOvr, transition, timing, extLst.
+    """
+    order = {
+        f"{{{P}}}cSld": 10,
+        f"{{{P}}}clrMapOvr": 20,
+        f"{{{P}}}transition": 30,
+        f"{{{P}}}timing": 40,
+        f"{{{P}}}extLst": 50,
+    }
+    children = list(slide_root)
+    children.sort(key=lambda e: order.get(e.tag, 45))
+    slide_root[:] = children
+
+
+def _audio_icon_png() -> bytes:
+    # Valid 64x64 PNG generated once and embedded as base64 so the backend has no Pillow dependency.
+    return base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAABoklEQVR4nO2bMXLDIBBF5UwK9yncxndIn8vkWL5Met8hdW6QzqmY0SAQi7yfD9J/pY12/n5WICQ4nd/eH9OBeWELYCMD2ALYvG656H67eOtw4+Prt6r9qWYQ7DnxGKsRJgNGSjymZETRgFTytWXWklq9qwbEwXpOPMaqPTsLjJz8NC315m5j0zQ4WvIBi+6kAXO3Rk0+MNefqoLDPwgtDNhT7wfWqkAVwBbAZtNa4Fn+vn+y/50/rw2VNDZgLfG4TSsjmhhgSTx3DdoI+BiwJXnP60tADfASjzQBZoC3aJQJh58GIQagegsRVxXgHRA9anvHVwWwBbCRAWwBbGQAWwAbdwPQqzfv+KoARFBUFSDiqgJQgb17C1VV0ArwEo0cWOG3wLPi0bNKk5eiIYmaldyu3goHLEa0/i6gWYAtgI0MYAtgIwPYAtjIALYANoc3AP4kWPshI9V+6MVQ7ywMKG0sHJG1rX+qgNSPe6qC0sZP0yB4v1027xptvbydY+m87C1g3W7eK9bt/joxojNDOjVWf3a4ZyOg5wb3iB6E2ALY/AM/xpVMnGx42AAAAABJRU5ErkJggg=="
     )
